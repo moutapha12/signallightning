@@ -169,7 +169,7 @@ const SUPABASE_URL = "https://svexvxvgexvavtnfnkwh.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZXh2eHZnZXh2YXZ0bmZua3doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5NTIxMTIsImV4cCI6MjA3MzUyODExMn0.Ux4HX99qzVGLKC35dfuizbZq-OS-x98BpamYffoDpUk";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ✅ URL IFTTT fournie par toi
+// ✅ URL IFTTT
 const IFTTT_URL = "https://maker.ifttt.com/trigger/Salvi_signalement/with/key/kMegBLDT4szlB6uuR5a2hJtJe_0u48dG-isV6K6A6hT";
 async function pushIFTTT(values){
   const url = IFTTT_URL
@@ -208,19 +208,29 @@ function popupHtml(l){
     <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
       <button class="btn" data-cmd="set" data-id="${l.id}" data-status="EN_COURS">⏳ En cours</button>
       <button class="btn alt" data-cmd="set" data-id="${l.id}" data-status="RÉPARÉ">🛠️ Réparé</button>
+      <button class="btn ghost" data-cmd="disable" data-id="${l.id}">🚫 Désactiver</button>
     </div>` : '';
   const label = l.etat==='PANNE' ? 'Panne ❌' : l.etat==='EN_COURS' ? 'En cours ⏳' : 'OK ✅';
   return `<b>${l.id}</b><br/>${label}` + adminBtns;
 }
 function applyMarker(l){
+  // icône selon l'état
   if(l.etat==='PANNE') l._marker.setIcon(redIcon);
   else if(l.etat==='EN_COURS') l._marker.setIcon(orangeIcon);
   else l._marker.setIcon(greenIcon);
-  l._marker.setPopupContent(popupHtml(l));
+
+  // contenu popup (avec bouton Désactiver si admin)
+  const html = popupHtml(l);
+  const existing = l._marker.getPopup && l._marker.getPopup();
+  if(!existing){
+    l._marker.bindPopup(html);
+  }else{
+    l._marker.setPopupContent(html);
+  }
 }
 
 /* =========================
-   3) DB HELPERS (avec contrôles)
+   3) DB HELPERS
    ========================= */
 async function cloudLoadLamps(){
   const { data, error } = await sb.from('lamps').select('*').order('id');
@@ -243,7 +253,7 @@ async function cloudLoadEvents(){
 }
 
 /* =========================
-   4) LOGS & PERSISTENCE PAR DERNIER EVENT (pk)
+   4) LOGS & STATUS
    ========================= */
 function setLogData(rows){
   LOG_CACHE = rows.map(r => ({
@@ -342,7 +352,11 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
 
 document.getElementById('btnReset').addEventListener('click', async ()=>{
   const email = prompt("Entrez votre email :"); if(!email) return;
-  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + "/reset.html" });
+  // NOTE: en prod (GitHub Pages), construis l'URL complète vers reset.html
+  const { origin, pathname } = window.location;
+  const base = pathname.replace(/\/index\.html?$/,'').replace(/\/$/,'');
+  const resetUrl = `${origin}${base}/reset.html`;
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: resetUrl });
   if (error) alert("Erreur : " + error.message); else alert("✅ Email de réinitialisation envoyé.");
 });
 
@@ -359,7 +373,6 @@ async function hydrateAdmin(){
   document.getElementById('btnEnCours').disabled = !(selectedLamp && isAdmin);
   document.getElementById('btnRepair').disabled = !(selectedLamp && isAdmin);
 
-  // Afficher/cacher le bouton "Ajouter lampe"
   const addBtn = document.getElementById('btnAddLamp');
   if(addBtn){
     addBtn.style.display = isAdmin ? 'inline-block' : 'none';
@@ -400,10 +413,26 @@ document.addEventListener('click', async (e)=>{
   if(e.target.id==='btnPurge'){
     await purgeEvents();
   }
-  // Bouton "➕ Ajouter lampe"
   if(e.target && e.target.id === 'btnAddLamp'){
     if(!isAdmin){ alert('Admin requis'); return; }
     enableAddMode(!addMode);
+  }
+  // 🚫 Désactiver (admin)
+  if(e.target.dataset && e.target.dataset.cmd==='disable'){
+    if(!isAdmin){ alert('Admin requis'); return; }
+    const l = lampadaires.find(x=>x.id===e.target.dataset.id); if(!l) return;
+    if(!confirm(`Désactiver le lampadaire ${l.id} ?`)) return;
+
+    await cloudUpsertLamp({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, actif:false });
+    if(l._marker){ map.removeLayer(l._marker); l._marker = null; }
+    lampadaires = lampadaires.filter(x => x.id !== l.id);
+    selectedLamp = null;
+    document.getElementById('btnSignal').disabled = true;
+    document.getElementById('btnEnCours').disabled = true;
+    document.getElementById('btnRepair').disabled = true;
+    document.getElementById('status').textContent = `Lampe ${l.id} désactivée.`;
+    updateStats();
+    renderLogs();
   }
 });
 
@@ -431,7 +460,6 @@ function enableAddMode(on){
     btn.textContent = '✅ Cliquez sur la carte…';
     btn.classList.add('warn');
 
-    // Handler: clic sur la carte
     mapClickHandler = async (e) => {
       const lat = Number(e.latlng.lat.toFixed(6));
       const lon = Number(e.latlng.lng.toFixed(6));
@@ -440,33 +468,26 @@ function enableAddMode(on){
       id = id.trim();
       if(!id){ alert('ID invalide.'); return; }
 
-      // Unicité client
       if(lampadaires.some(l => l.id === id)){
         alert('❌ ID déjà utilisé. Choisis un autre identifiant.');
         return;
       }
 
-      // 1) Enregistrer en base (etat = "OK" par défaut)
-      const newLamp = { id, lat, lon, etat: 'OK' };
+      const newLamp = { id, lat, lon, etat: 'OK', actif: true };
       await cloudUpsertLamp(newLamp);
 
-      // 2) Ajouter sur la carte + mémoire
       const marker = L.marker([lat, lon], { icon: greenIcon }).addTo(map);
       const l = { ...newLamp, _marker: marker };
       lampadaires.push(l);
       applyMarker(l);
       updateStats();
 
-      // ➜ Ajout du même handler de clic que dans bootstrap()
       marker.on('click', () => {
         selectedLamp = l;
-
-        document.getElementById('btnSignal').disabled = false;     // PANNE pour tous
-        document.getElementById('btnEnCours').disabled = !isAdmin;  // EN COURS = admin
-        document.getElementById('btnRepair').disabled = !isAdmin;   // RÉPARÉ = admin
-
+        document.getElementById('btnSignal').disabled = false;
+        document.getElementById('btnEnCours').disabled = !isAdmin;
+        document.getElementById('btnRepair').disabled = !isAdmin;
         document.getElementById('status').textContent = `Point sélectionné : ${l.id}`;
-
         if (marker._icon) {
           marker._icon.classList.remove('bounce');
           void marker._icon.offsetWidth;
@@ -474,7 +495,6 @@ function enableAddMode(on){
         }
       });
 
-      // 3) Feedback et sélection immédiate
       selectedLamp = l;
       document.getElementById('status').textContent = `Lampe ajoutée : ${id}`;
       marker.openPopup();
@@ -491,16 +511,13 @@ function enableAddMode(on){
 }
 
 async function mark(lamp, statut, type='-'){
-  // Type sûr pour l'ENUM
   const safeType = (statut==='PANNE') ? ((type && type !== '-') ? type : 'Autre') : null;
 
-  // 1) journal
   const insertPayload = { lamp_id:lamp.id, statut:statut };
   if(safeType !== null) insertPayload.type = safeType;
   const ins = await cloudInsertEvent(insertPayload);
   if(!ins) return;
 
-  // 2) IFTTT
   const t = new Date().toLocaleString('fr-FR',{timeZone:'Africa/Dakar'});
   if(statut==='PANNE'){
     const comment = document.getElementById('comment')?.value?.trim() || '';
@@ -510,18 +527,15 @@ async function mark(lamp, statut, type='-'){
     pushIFTTT({ v1:`Lampadaire ${lamp.id}`, v2:'Réparation effectuée', v3:`${t} — lat ${lamp.lat}, lon ${lamp.lon}` });
   }
 
-  // 3) maj UI
   const newEtat = (statut==='RÉPARÉ') ? 'OK' : statut;
   lamp.etat = newEtat; applyMarker(l); updateStats();
   document.getElementById('status').textContent = `${lamp.id} → ${statut}`;
   updatePanelColor(statut);
 
-  // 4) persister dans lamps si admin
   if(isAdmin){
-    await cloudUpsertLamp({ id:lamp.id, lat:lamp.lat, lon:lamp.lon, etat:newEtat });
+    await cloudUpsertLamp({ id:lamp.id, lat:lamp.lat, lon:lamp.lon, etat:newEtat, actif:true });
   }
 
-  // 5) log local
   LOG_CACHE.unshift({
     pk: Number.MAX_SAFE_INTEGER,
     id: lamp.id, type: safeType||'', statut,
@@ -570,8 +584,9 @@ function subscribeRealtime(){
       const l = lampadaires.find(x=>x.id===r.lamp_id);
       if(l){
         l.etat = (r.statut==='RÉPARÉ') ? 'OK' : r.statut;
-        applyMarker(l); updateStats();
-        updatePanelColor(r.statut); // flash à la réception aussi
+        if (l._marker) { applyMarker(l); }
+        updateStats();
+        updatePanelColor(r.statut);
       }
       renderLogs();
     })
@@ -580,8 +595,23 @@ function subscribeRealtime(){
   sb.channel('realtime:lamps')
     .on('postgres_changes', { event:'UPDATE', schema:'public', table:'lamps' }, (payload)=>{
       const row = payload.new;
-      const l = lampadaires.find(x=>x.id===row.id); if(!l) return;
-      l.etat = row.etat; applyMarker(l); updateStats();
+
+      if (row.actif === false) {
+        const lx = lampadaires.find(x=>x.id===row.id);
+        if(lx){
+          if(lx._marker){ map.removeLayer(lx._marker); lx._marker = null; }
+          lampadaires = lampadaires.filter(x=>x.id !== row.id);
+          updateStats(); renderLogs();
+        }
+        return;
+      }
+
+      const l = lampadaires.find(x=>x.id===row.id);
+      if(l){
+        l.etat = row.etat;
+        if (l._marker) applyMarker(l);
+        updateStats();
+      }
     })
     .subscribe();
 }
@@ -599,24 +629,24 @@ async function bootstrap(){
   await hydrateAdmin();
 
   const [lamps, events] = await Promise.all([ cloudLoadLamps(), cloudLoadEvents() ]);
-  lampadaires = lamps.map(l => ({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, _marker:null }));
+
+  // n’afficher que les lampes actives
+  lampadaires = (lamps || [])
+    .filter(l => l.actif !== false)
+    .map(l => ({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, _marker:null }));
+
   setLogData(events);
   computeLatestStatuses();
 
   lampadaires.forEach(l=>{
     const marker = L.marker([l.lat, l.lon], { icon: greenIcon }).addTo(map);
     l._marker = marker; applyMarker(l);
-
-    // ➜ Handler de clic (corrigé)
     marker.on('click', () => {
       selectedLamp = l;
-
-      document.getElementById('btnSignal').disabled = false;     // PANNE pour tous
-      document.getElementById('btnEnCours').disabled = !isAdmin;  // EN COURS = admin
-      document.getElementById('btnRepair').disabled = !isAdmin;   // RÉPARÉ = admin
-
+      document.getElementById('btnSignal').disabled = false;
+      document.getElementById('btnEnCours').disabled = !isAdmin;
+      document.getElementById('btnRepair').disabled = !isAdmin;
       document.getElementById('status').textContent = `Point sélectionné : ${l.id}`;
-
       if (marker._icon) {
         marker._icon.classList.remove('bounce');
         void marker._icon.offsetWidth;
