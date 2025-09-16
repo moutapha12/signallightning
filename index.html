@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Kaolack — Signalement PWA (Supabase + Realtime + IFTTT)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <style>
+    :root{
+      --bg:#0f172a; --brand:#e82727; --ok:#1bf074; --ko:#ef4444; --warn:#f59e0b;
+      --panel:#ffffff; /* ← redevient bien BLANC après le flash */
+      --panel-border:#e5e7eb; --text:#0f172a; --success:#16a34a;
+    }
+    *{ box-sizing:border-box }
+    body{ font-family: Arial, sans-serif; margin:0; color:var(--text); background:#fff; }
+    header{ padding:12px 16px; color:#fff; background:var(--bg); display:flex; align-items:center; justify-content:space-between; }
+    h1{ font-size:20px; margin:0; color:#fff; }
+    #map{ height:52vh; width:100%; }
+
+    .panel{
+      padding:12px 16px; background:var(--panel); border-top:1px solid var(--panel-border);
+      border-radius:14px 14px 0 0; box-shadow:0 -10px 30px rgba(0,0,0,.08);
+      transition: background .25s ease, color .25s ease;
+    }
+
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .btn{ padding:10px 14px; background:var(--brand); color:#fff; border:none; border-radius:10px; cursor:pointer; font-weight:600; box-shadow: 0 6px 14px rgba(37,99,235,.25); transition: transform .08s ease, box-shadow .15s ease, filter .15s ease; }
+    .btn:hover{ transform: translateY(-1px); box-shadow: 0 10px 20px rgba(0,0,0,.15); filter: saturate(1.03); }
+    .btn.warn{ background:#f59e0b } .btn.alt{ background:#16a34a } .btn.ghost{ background:#334155 } .btn.danger{ background:#b91c1c }
+    .btn:disabled{ background:#94a3b8; cursor:not-allowed; box-shadow:none }
+
+    .legend{ display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+    .dot{ width:10px; height:10px; border-radius:9999px; display:inline-block; margin-right:6px; }
+    .ok{ background:var(--ok) } .mid{ background:var(--warn) } .ko{ background:var(--ko) }
+
+    select, input[type="text"]{ padding:8px; border:1px solid #cbd5e1; border-radius:8px; }
+    table{ width:100%; border-collapse:collapse; margin-top:10px; background:#fff; border-radius:10px; overflow:hidden; }
+    th,td{ border:1px solid #eef2f7; padding:10px; font-size:14px; text-align:left; color:#0f172a; }
+    th{ background:#f8fafc }
+    .notice{ font-size:13px; color:#334155 }
+    .stats{ display:flex; gap:10px; flex-wrap:wrap; margin:8px 0 }
+    .stat{ background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:8px 10px; font-size:13px }
+    .tools{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px }
+    .hl{ outline:3px solid #60a5fa; outline-offset:2px; border-radius:6px }
+
+    .badge{ padding:4px 8px; border-radius:9999px; font-weight:700; font-size:12px; display:inline-block }
+    .b-ok{ background:#dcfce7; color:#166534 } .b-mid{ background:#fff7ed; color:#9a3412 }
+    .b-closed{ background:#e6ffed; color:#166534; border:1px solid #bbf7d0 } .b-active{ background:#fff1f2; color:#9f1239; border:1px solid #fecdd3 }
+
+    /* ---------- FLASH UNIQUE (couleur -> revient BLANC) ---------- */
+    @keyframes flash-red {
+      0%{ background:#fff; color:var(--text); }
+      45%{ background:var(--ko); color:#fff; }
+      100%{ background:#fff; color:var(--text); }
+    }
+    @keyframes flash-orange {
+      0%{ background:#fff; color:var(--text); }
+      45%{ background:var(--warn); color:#fff; }
+      100%{ background:#fff; color:var(--text); }
+    }
+    @keyframes flash-green {
+      0%{ background:#fff; color:var(--text); }
+      45%{ background:var(--success); color:#fff; }
+      100%{ background:#fff; color:var(--text); }
+    }
+    .panel.flash-red    { animation: flash-red .9s ease-out 1; }
+    .panel.flash-orange { animation: flash-orange .9s ease-out 1; }
+    .panel.flash-green  { animation: flash-green .9s ease-out 1; }
+
+    /* Animation “rebond” du marqueur (pas de halo ni de bordure) */
+    @keyframes bounce {
+      0%{ transform: translateY(0) }
+      30%{ transform: translateY(-6px) }
+      60%{ transform: translateY(0) }
+      85%{ transform: translateY(-3px) }
+      100%{ transform: translateY(0) }
+    }
+    .bounce{ animation: bounce .45s ease-out; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand" style="display:flex;align-items:center;gap:10px;">
+      <img src="logo-salvi.png" alt="Salvi" style="height:40px;border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,.28)" />
+      <h1>Kaolack</h1>
+    </div>
+    <div class="row">
+      <button id="btnLogin" class="btn ghost">Connexion</button>
+      <button id="btnReset" class="btn ghost">Mot de passe oublié ?</button>
+      <button id="btnLogout" class="btn ghost" style="display:none;">Déconnexion</button>
+    </div>
+  </header>
+
+  <div id="map"></div>
+
+  <div class="panel" id="mainPanel">
+    <div class="legend">
+      <span><span class="dot ok"></span>OK</span>
+      <span><span class="dot mid"></span>En cours</span>
+      <span><span class="dot ko"></span>Panne</span>
+    </div>
+
+    <div class="row">
+      <label for="type">Type de panne :</label>
+      <select id="type">
+        <option>Lampe éteinte</option>
+        <option>Clignotement</option>
+        <option>Poteau endommagé</option>
+        <option>Câble arraché</option>
+        <option>Boîtier ouvert</option>
+        <option>Autre</option>
+      </select>
+      <input id="comment" type="text" placeholder="Commentaire (optionnel)" style="flex:1; min-width:220px;" />
+    </div>
+
+    <div class="row" style="margin-top:8px;">
+      <button id="btnSignal" class="btn danger" disabled>📍 PANNE</button>
+      <button id="btnEnCours" class="btn warn" disabled>⏳ EN COURS</button>
+      <button id="btnRepair" class="btn alt" disabled>🛠️ RÉPARÉ</button>
+      <span id="status" class="notice"></span>
+    </div>
+
+    <div id="adminTools" style="display:none; margin-top:8px;">
+      <h3 style="margin:10px 0 6px;">🛡️ Outils Admin</h3>
+      <div class="stats">
+        <div class="stat">Total lampadaires : <b id="stTotal">0</b></div>
+        <div class="stat">Pannes actives : <b id="stPanneActives">0</b></div>
+        <div class="stat">En cours actives : <b id="stEnCoursActives">0</b></div>
+        <div class="stat">Réparations (total) : <b id="stRepairs">0</b></div>
+      </div>
+      <div class="tools">
+        <label>Filtre :
+          <select id="filterSel">
+            <option value="ALL">Tous</option>
+            <option value="PANNE">Pannes (toutes)</option>
+            <option value="PANNE_ACTIVE">Pannes actives</option>
+            <option value="PANNE_CLOTURE">Pannes clôturées</option>
+            <option value="EN_COURS">En cours</option>
+            <option value="RÉPARÉ">Réparés</option>
+          </select>
+        </label>
+        <label>Recherche :
+          <input id="searchInp" placeholder="Rechercher (ID, type, statut)"/>
+        </label>
+        <button id="btnExportXLSX" class="btn ghost">⬇️ Export Excel</button>
+        <button id="btnPurge" class="btn danger">🗑️ Purger le journal</button>
+      </div>
+    </div>
+
+    <h3 style="margin:12px 0 6px;">📋 Journal des événements</h3>
+    <table id="logTable">
+      <thead>
+        <tr><th>ID</th><th>Type</th><th>Statut</th><th>Date/heure</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+/* =========================
+   0) CONFIG SUPABASE + IFTTT
+   ========================= */
+const SUPABASE_URL = "https://svexvxvgexvavtnfnkwh.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZXh2eHZnZXh2YXZ0bmZua3doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5NTIxMTIsImV4cCI6MjA3MzUyODExMn0.Ux4HX99qzVGLKC35dfuizbZq-OS-x98BpamYffoDpUk";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ✅ URL IFTTT fournie par toi
+const IFTTT_URL = "https://maker.ifttt.com/trigger/Salvi_signalement/with/key/kMegBLDT4szlB6uuR5a2hJtJe_0u48dG-isV6K6A6hT";
+async function pushIFTTT(values){
+  const url = IFTTT_URL
+    + "?value1=" + encodeURIComponent(values.v1)
+    + "&value2=" + encodeURIComponent(values.v2)
+    + "&value3=" + encodeURIComponent(values.v3);
+  try {
+    await fetch(url, { method:'GET', mode:'no-cors' });
+  } catch(e) {
+    const img = new Image();
+    img.src = url + "&_t=" + Date.now();
+  }
+}
+
+/* =========================
+   1) ÉTAT / VARS
+   ========================= */
+let map, selectedLamp = null;
+let lampadaires = [];    // depuis DB
+let isAdmin = false;
+let LOG_CACHE = [];      // events
+
+/* =========================
+   2) ICONS (rouge/orange/vert)
+   ========================= */
+const greenIcon = new L.Icon({ iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconSize:[25,41], iconAnchor:[12,41], popupAnchor:[1,-34], shadowSize:[41,41] });
+const redIcon   = new L.Icon({ iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',   shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconSize:[25,41], iconAnchor:[12,41], popupAnchor:[1,-34], shadowSize:[41,41] });
+const orangeIcon= new L.Icon({ iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-gold.png',  shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconSize:[25,41], iconAnchor:[12,41], popupAnchor:[1,-34], shadowSize:[41,41] });
+
+function popupHtml(l){
+  const adminBtns = isAdmin ? `
+    <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+      <button class="btn" data-cmd="set" data-id="${l.id}" data-status="EN_COURS">⏳ En cours</button>
+      <button class="btn alt" data-cmd="set" data-id="${l.id}" data-status="RÉPARÉ">🛠️ Réparé</button>
+    </div>` : '';
+  const label = l.etat==='PANNE' ? 'Panne ❌' : l.etat==='EN_COURS' ? 'En cours ⏳' : 'OK ✅';
+  return `<b>${l.id}</b><br/>${label}` + adminBtns;
+}
+function applyMarker(l){
+  if(l.etat==='PANNE') l._marker.setIcon(redIcon);
+  else if(l.etat==='EN_COURS') l._marker.setIcon(orangeIcon);
+  else l._marker.setIcon(greenIcon);
+  l._marker.setPopupContent(popupHtml(l));
+}
+
+/* =========================
+   3) DB HELPERS (avec contrôles)
+   ========================= */
+async function cloudLoadLamps(){
+  const { data, error } = await sb.from('lamps').select('*').order('id');
+  if(error){ console.error('lamps load:', error); return []; }
+  return data||[];
+}
+async function cloudUpsertLamp(l){
+  const { error } = await sb.from('lamps').upsert(l, { onConflict:'id' });
+  if(error){ console.error('lamps upsert:', error); alert('❌ maj lampe: '+error.message); }
+}
+async function cloudInsertEvent(evt){
+  const { data, error } = await sb.from('events').insert(evt).select('pk, datetime').single();
+  if(error){ console.error('events insert:', error); alert('❌ journal (events): '+error.message); return null; }
+  return data;
+}
+async function cloudLoadEvents(){
+  const { data, error } = await sb.from('events').select('pk,lamp_id,type,statut,datetime').order('pk', { ascending:false }).limit(2000);
+  if(error){ console.error('events load:', error); return []; }
+  return data||[];
+}
+
+/* =========================
+   4) LOGS & PERSISTENCE PAR DERNIER EVENT (pk)
+   ========================= */
+function setLogData(rows){
+  LOG_CACHE = rows.map(r => ({
+    pk: r.pk,
+    id: r.lamp_id,
+    type: r.type || '',
+    statut: r.statut,
+    datetime: new Date(r.datetime).toLocaleString('fr-FR',{timeZone:'Africa/Dakar'})
+  }));
+}
+function computeLatestStatuses(){
+  const latest = new Map(); // id -> {statut, pk}
+  for(const r of LOG_CACHE){
+    const cur = latest.get(r.id);
+    if(!cur || r.pk > cur.pk) latest.set(r.id, { statut: r.statut, pk: r.pk });
+  }
+  for(const l of lampadaires){
+    const lr = latest.get(l.id);
+    if(!lr) continue;
+    l.etat = (lr.statut === 'RÉPARÉ') ? 'OK' : lr.statut; // PANNE/EN_COURS/OK
+  }
+}
+function renderLogs(){
+  const f = document.getElementById('filterSel')?.value || 'ALL';
+  const q = (document.getElementById('searchInp')?.value || '').toLowerCase();
+
+  const rows = LOG_CACHE.slice(); // pk DESC
+  const visible = rows
+    .filter(r => {
+      if(f === 'ALL') return true;
+      if(f === 'PANNE' || f === 'EN_COURS' || f === 'RÉPARÉ') return r.statut === f;
+      if(f === 'PANNE_ACTIVE' || f === 'PANNE_CLOTURE'){
+        if(r.statut !== 'PANNE') return false;
+        const l = lampadaires.find(x=>x.id===r.id);
+        const closed = l && l.etat === 'OK';
+        return (f === 'PANNE_ACTIVE') ? !closed : closed;
+      }
+      return true;
+    })
+    .filter(r => (`${r.id} ${r.type} ${r.statut} ${r.datetime}`.toLowerCase().includes(q)));
+
+  const tbody = document.querySelector('#logTable tbody'); tbody.innerHTML = '';
+  visible.forEach(row=>{
+    let badge;
+    if(row.statut==='PANNE'){
+      const l = lampadaires.find(x=>x.id===row.id);
+      const closed = l && l.etat==='OK';
+      badge = closed ? '<span class="badge b-closed">Panne — clôturée</span>' : '<span class="badge b-active">Panne — active</span>';
+    } else if(row.statut==='EN_COURS') badge = '<span class="badge b-mid">En cours</span>';
+    else if(row.statut==='RÉPARÉ')      badge = '<span class="badge b-ok">Réparé</span>';
+    else badge = row.statut;
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${row.id}</td><td>${row.type||'-'}</td><td>${badge}</td><td>${row.datetime}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const totalRepairs = rows.filter(r => r.statut === 'RÉPARÉ').length;
+  document.getElementById('stRepairs').textContent = totalRepairs.toString();
+}
+
+/* =========================
+   5) STATS
+   ========================= */
+function updateStats(){
+  document.getElementById('stTotal').textContent = lampadaires.length;
+  document.getElementById('stPanneActives').textContent = lampadaires.filter(l=>l.etat==='PANNE').length;
+  document.getElementById('stEnCoursActives').textContent = lampadaires.filter(l=>l.etat==='EN_COURS').length;
+}
+
+/* =========================
+   6) AUTH
+   ========================= */
+document.getElementById('btnLogin').addEventListener('click', async ()=>{
+  const email = prompt('Email :'); if(!email) return;
+  const password = prompt('Mot de passe :'); if(!password) return;
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) return alert('Erreur login: ' + error.message);
+  await hydrateAdmin();
+  lampadaires.forEach(applyMarker);
+  updateStats(); renderLogs();
+  alert('Connecté.');
+});
+
+document.getElementById('btnLogout').addEventListener('click', async ()=>{
+  await sb.auth.signOut();
+  isAdmin = false;
+  document.getElementById('adminTools').style.display = 'none';
+  document.getElementById('btnLogin').style.display = 'inline-block';
+  document.getElementById('btnLogout').style.display = 'none';
+  document.getElementById('btnEnCours').disabled = true;
+  document.getElementById('btnRepair').disabled = true;
+  lampadaires.forEach(applyMarker);
+  updateStats(); renderLogs();
+});
+
+document.getElementById('btnReset').addEventListener('click', async ()=>{
+  const email = prompt("Entrez votre email :"); if(!email) return;
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + "/reset.html" });
+  if (error) alert("Erreur : " + error.message); else alert("✅ Email de réinitialisation envoyé.");
+});
+
+async function hydrateAdmin(){
+  const { data: { user } } = await sb.auth.getUser();
+  isAdmin = false;
+  if (user) {
+    const { data: prof } = await sb.from('profiles').select('is_admin').eq('id', user.id).maybeSingle();
+    isAdmin = !!prof?.is_admin;
+  }
+  document.getElementById('adminTools').style.display = isAdmin ? 'block' : 'none';
+  document.getElementById('btnLogin').style.display = isAdmin ? 'none' : 'inline-block';
+  document.getElementById('btnLogout').style.display = isAdmin ? 'inline-block' : 'none';
+  document.getElementById('btnEnCours').disabled = !(selectedLamp && isAdmin);
+  document.getElementById('btnRepair').disabled = !(selectedLamp && isAdmin);
+}
+
+/* =========================
+   7) ACTIONS
+   ========================= */
+document.addEventListener('click', async (e)=>{
+  if(e.target.id==='btnSignal' && selectedLamp){
+    const type = document.getElementById('type').value;
+    await mark(selectedLamp, 'PANNE', type);
+    document.getElementById('comment').value = "";
+  }
+  if(e.target.id==='btnEnCours' && isAdmin && selectedLamp){
+    await mark(selectedLamp, 'EN_COURS');
+  }
+  if(e.target.id==='btnRepair' && isAdmin && selectedLamp){
+    await mark(selectedLamp, 'RÉPARÉ');
+  }
+  if(e.target.dataset && e.target.dataset.cmd==='set'){
+    if(!isAdmin) { alert('Admin requis'); return; }
+    const l = lampadaires.find(x=>x.id===e.target.dataset.id); if(!l) return;
+    await mark(l, e.target.dataset.status);
+  }
+  if(e.target.id==='btnExportXLSX'){
+    const mapIndex = Object.fromEntries(lampadaires.map(l => [l.id, l]));
+    const data = LOG_CACHE.map(r => ({
+      ID: r.id, Type: r.type || '', Statut: r.statut, DateHeure: r.datetime,
+      Latitude: mapIndex[r.id]?.lat ?? '', Longitude: mapIndex[r.id]?.lon ?? ''
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Signalements");
+    XLSX.writeFile(wb, `salvi_signalements_${Date.now()}.xlsx`);
+  }
+  if(e.target.id==='btnPurge'){
+    await purgeEvents();
+  }
+});
+
+/* === Panneau : FLASH puis retour BLANC === */
+function updatePanelColor(statut){
+  const panel = document.getElementById('mainPanel');
+  // on enlève les classes d’anim éventuelles
+  panel.classList.remove('flash-red','flash-orange','flash-green');
+
+  // on déclenche un flash selon le statut (puis revient blanc automatiquement)
+  if(statut==='PANNE'){
+    void panel.offsetWidth; panel.classList.add('flash-red');
+  } else if(statut==='EN_COURS'){
+    void panel.offsetWidth; panel.classList.add('flash-orange');
+  } else if(statut==='RÉPARÉ' || statut==='OK'){
+    void panel.offsetWidth; panel.classList.add('flash-green');
+  }
+}
+
+async function mark(lamp, statut, type='-'){
+  // Type sûr pour l'ENUM
+  const safeType = (statut==='PANNE') ? ((type && type !== '-') ? type : 'Autre') : null;
+
+  // 1) journal
+  const insertPayload = { lamp_id:lamp.id, statut:statut };
+  if(safeType !== null) insertPayload.type = safeType;
+  const ins = await cloudInsertEvent(insertPayload);
+  if(!ins) return;
+
+  // 2) IFTTT
+  const t = new Date().toLocaleString('fr-FR',{timeZone:'Africa/Dakar'});
+  if(statut==='PANNE'){
+    const comment = document.getElementById('comment')?.value?.trim() || '';
+    pushIFTTT({ v1:`Lampadaire ${lamp.id}`, v2:safeType, v3:`${t} — lat ${lamp.lat}, lon ${lamp.lon}${comment ? " — " + comment : ""}` });
+  }
+  if(statut==='RÉPARÉ'){
+    pushIFTTT({ v1:`Lampadaire ${lamp.id}`, v2:'Réparation effectuée', v3:`${t} — lat ${lamp.lat}, lon ${lamp.lon}` });
+  }
+
+  // 3) maj UI
+  const newEtat = (statut==='RÉPARÉ') ? 'OK' : statut;
+  lamp.etat = newEtat; applyMarker(l); updateStats();
+  document.getElementById('status').textContent = `${lamp.id} → ${statut}`;
+  updatePanelColor(statut);
+
+  // 4) persister dans lamps si admin
+  if(isAdmin){
+    await cloudUpsertLamp({ id:lamp.id, lat:lamp.lat, lon:lamp.lon, etat:newEtat });
+  }
+
+  // 5) log local
+  LOG_CACHE.unshift({
+    pk: Number.MAX_SAFE_INTEGER,
+    id: lamp.id, type: safeType||'', statut,
+    datetime: t
+  });
+  renderLogs();
+}
+
+/* =========================
+   7bis) PURGE JOURNAL (admin only)
+   ========================= */
+async function purgeEvents(){
+  const { data: { user } } = await sb.auth.getUser();
+  if(!user){ alert('Connecte-toi.'); return; }
+  if(!isAdmin){ alert('Admin requis'); return; }
+  if(!confirm('⚠️ Supprimer TOUT le journal des événements ?')) return;
+  const second = prompt('Pour confirmer, tape EXACTEMENT : PURGER');
+  if(second !== 'PURGER'){ alert('Opération annulée.'); return; }
+
+  const { error } = await sb.from('events').delete().neq('pk', -1);
+  if(error){ alert('Erreur purge: ' + error.message); return; }
+
+  const evts = await cloudLoadEvents(); setLogData(evts); computeLatestStatuses();
+  lampadaires.forEach(applyMarker); updateStats(); renderLogs();
+
+  selectedLamp = null;
+  document.getElementById('btnSignal').disabled = true;
+  document.getElementById('btnEnCours').disabled = true;
+  document.getElementById('btnRepair').disabled = true;
+  document.getElementById('status').textContent = 'Journal purgé.';
+  alert('✅ Journal purgé.');
+}
+
+/* =========================
+   8) REALTIME
+   ========================= */
+function subscribeRealtime(){
+  sb.channel('realtime:events')
+    .on('postgres_changes', { event:'INSERT', schema:'public', table:'events' }, (payload)=>{
+      const r = payload.new;
+      LOG_CACHE.unshift({
+        pk:r.pk, id:r.lamp_id, type:r.type||'', statut:r.statut,
+        datetime: new Date(r.datetime).toLocaleString('fr-FR',{timeZone:'Africa/Dakar'})
+      });
+
+      const l = lampadaires.find(x=>x.id===r.lamp_id);
+      if(l){
+        l.etat = (r.statut==='RÉPARÉ') ? 'OK' : r.statut;
+        applyMarker(l); updateStats();
+        updatePanelColor(r.statut); // flash à la réception aussi
+      }
+      renderLogs();
+    })
+    .subscribe();
+
+  sb.channel('realtime:lamps')
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'lamps' }, (payload)=>{
+      const row = payload.new;
+      const l = lampadaires.find(x=>x.id===row.id); if(!l) return;
+      l.etat = row.etat; applyMarker(l); updateStats();
+    })
+    .subscribe();
+}
+
+/* =========================
+   9) MAP + BOOTSTRAP
+   ========================= */
+function initMap(){
+  map = L.map('map').setView([14.146, -16.072], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'© OpenStreetMap' }).addTo(map);
+}
+
+async function bootstrap(){
+  initMap();
+  await hydrateAdmin();
+
+  const [lamps, events] = await Promise.all([ cloudLoadLamps(), cloudLoadEvents() ]);
+  lampadaires = lamps.map(l => ({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, _marker:null }));
+  setLogData(events);
+  computeLatestStatuses();
+
+  lampadaires.forEach(l=>{
+    const marker = L.marker([l.lat, l.lon], { icon: greenIcon }).addTo(map);
+    l._marker = marker; applyMarker(l);
+    marker.on('click', () => {
+      selectedLamp = l;
+      document.getElementById('btnSignal').disabled = false;
+      document.getElementById('btnEnCours').disabled = !isAdmin;
+      document.getElementById('btnRepair').disabled = !isAdmin;
+      document.getElementById('status').textContent = `Point sélectionné : ${l.id}`;
+
+      // petit rebond du marqueur
+      marker._icon.classList.remove('bounce'); void marker._icon.offsetWidth; marker._icon.classList.add('bounce');
+    });
+  });
+
+  document.getElementById('filterSel')?.addEventListener('change', renderLogs);
+  document.getElementById('searchInp')?.addEventListener('input', renderLogs);
+
+  updateStats();
+  renderLogs();
+  subscribeRealtime();
+
+  if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('./sw.js'); }catch(e){} }
+}
+window.addEventListener('load', bootstrap);
+</script>
+</body>
+</html>
