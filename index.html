@@ -12,7 +12,7 @@
   <style>
     :root{
       --bg:#0f172a; --brand:#e82727; --ok:#1bf074; --ko:#ef4444; --warn:#f59e0b;
-      --panel:#ffffff; /* ← redevient bien BLANC après le flash */
+      --panel:#ffffff; /* ← redevient BLANC après flash */
       --panel-border:#e5e7eb; --text:#0f172a; --success:#16a34a;
     }
     *{ box-sizing:border-box }
@@ -146,6 +146,7 @@
         <label>Recherche :
           <input id="searchInp" placeholder="Rechercher (ID, type, statut)"/>
         </label>
+        <button id="btnAddLamp" class="btn ghost" style="display:none;">➕ Ajouter lampe</button>
         <button id="btnExportXLSX" class="btn ghost">⬇️ Export Excel</button>
         <button id="btnPurge" class="btn danger">🗑️ Purger le journal</button>
       </div>
@@ -190,6 +191,10 @@ let map, selectedLamp = null;
 let lampadaires = [];    // depuis DB
 let isAdmin = false;
 let LOG_CACHE = [];      // events
+
+// Mode ajout lampe
+let addMode = false;
+let mapClickHandler = null;
 
 /* =========================
    2) ICONS (rouge/orange/vert)
@@ -353,6 +358,13 @@ async function hydrateAdmin(){
   document.getElementById('btnLogout').style.display = isAdmin ? 'inline-block' : 'none';
   document.getElementById('btnEnCours').disabled = !(selectedLamp && isAdmin);
   document.getElementById('btnRepair').disabled = !(selectedLamp && isAdmin);
+
+  // Afficher/cacher le bouton "Ajouter lampe"
+  const addBtn = document.getElementById('btnAddLamp');
+  if(addBtn){
+    addBtn.style.display = isAdmin ? 'inline-block' : 'none';
+    if(!isAdmin) enableAddMode(false);
+  }
 }
 
 /* =========================
@@ -388,21 +400,93 @@ document.addEventListener('click', async (e)=>{
   if(e.target.id==='btnPurge'){
     await purgeEvents();
   }
+  // Bouton "➕ Ajouter lampe"
+  if(e.target && e.target.id === 'btnAddLamp'){
+    if(!isAdmin){ alert('Admin requis'); return; }
+    enableAddMode(!addMode);
+  }
 });
 
 /* === Panneau : FLASH puis retour BLANC === */
 function updatePanelColor(statut){
   const panel = document.getElementById('mainPanel');
-  // on enlève les classes d’anim éventuelles
   panel.classList.remove('flash-red','flash-orange','flash-green');
 
-  // on déclenche un flash selon le statut (puis revient blanc automatiquement)
   if(statut==='PANNE'){
     void panel.offsetWidth; panel.classList.add('flash-red');
   } else if(statut==='EN_COURS'){
     void panel.offsetWidth; panel.classList.add('flash-orange');
   } else if(statut==='RÉPARÉ' || statut==='OK'){
     void panel.offsetWidth; panel.classList.add('flash-green');
+  }
+}
+
+/* === Mode ajout lampe (admin) === */
+function enableAddMode(on){
+  addMode = on;
+  const btn = document.getElementById('btnAddLamp');
+  if(!btn) return;
+
+  if(on){
+    btn.textContent = '✅ Cliquez sur la carte…';
+    btn.classList.add('warn');
+
+    // Handler: clic sur la carte
+    mapClickHandler = async (e) => {
+      const lat = Number(e.latlng.lat.toFixed(6));
+      const lon = Number(e.latlng.lng.toFixed(6));
+      let id = prompt(`ID du lampadaire (ex: L-001)\nCoordonnées: ${lat}, ${lon}`);
+      if(!id){ enableAddMode(false); return; }
+      id = id.trim();
+      if(!id){ alert('ID invalide.'); return; }
+
+      // Unicité client
+      if(lampadaires.some(l => l.id === id)){
+        alert('❌ ID déjà utilisé. Choisis un autre identifiant.');
+        return;
+      }
+
+      // 1) Enregistrer en base (etat = "OK" par défaut)
+      const newLamp = { id, lat, lon, etat: 'OK' };
+      await cloudUpsertLamp(newLamp);
+
+      // 2) Ajouter sur la carte + mémoire
+      const marker = L.marker([lat, lon], { icon: greenIcon }).addTo(map);
+      const l = { ...newLamp, _marker: marker };
+      lampadaires.push(l);
+      applyMarker(l);
+      updateStats();
+
+      // ➜ Ajout du même handler de clic que dans bootstrap()
+      marker.on('click', () => {
+        selectedLamp = l;
+
+        document.getElementById('btnSignal').disabled = false;     // PANNE pour tous
+        document.getElementById('btnEnCours').disabled = !isAdmin;  // EN COURS = admin
+        document.getElementById('btnRepair').disabled = !isAdmin;   // RÉPARÉ = admin
+
+        document.getElementById('status').textContent = `Point sélectionné : ${l.id}`;
+
+        if (marker._icon) {
+          marker._icon.classList.remove('bounce');
+          void marker._icon.offsetWidth;
+          marker._icon.classList.add('bounce');
+        }
+      });
+
+      // 3) Feedback et sélection immédiate
+      selectedLamp = l;
+      document.getElementById('status').textContent = `Lampe ajoutée : ${id}`;
+      marker.openPopup();
+
+      enableAddMode(false);
+    };
+
+    map.on('click', mapClickHandler);
+  } else {
+    btn.textContent = '➕ Ajouter lampe';
+    btn.classList.remove('warn');
+    if(mapClickHandler){ map.off('click', mapClickHandler); mapClickHandler = null; }
   }
 }
 
@@ -522,15 +606,22 @@ async function bootstrap(){
   lampadaires.forEach(l=>{
     const marker = L.marker([l.lat, l.lon], { icon: greenIcon }).addTo(map);
     l._marker = marker; applyMarker(l);
+
+    // ➜ Handler de clic (corrigé)
     marker.on('click', () => {
       selectedLamp = l;
-      document.getElementById('btnSignal').disabled = false;
-      document.getElementById('btnEnCours').disabled = !isAdmin;
-      document.getElementById('btnRepair').disabled = !isAdmin;
+
+      document.getElementById('btnSignal').disabled = false;     // PANNE pour tous
+      document.getElementById('btnEnCours').disabled = !isAdmin;  // EN COURS = admin
+      document.getElementById('btnRepair').disabled = !isAdmin;   // RÉPARÉ = admin
+
       document.getElementById('status').textContent = `Point sélectionné : ${l.id}`;
 
-      // petit rebond du marqueur
-      marker._icon.classList.remove('bounce'); void marker._icon.offsetWidth; marker._icon.classList.add('bounce');
+      if (marker._icon) {
+        marker._icon.classList.remove('bounce');
+        void marker._icon.offsetWidth;
+        marker._icon.classList.add('bounce');
+      }
     });
   });
 
