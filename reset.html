@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Réinitialiser le mot de passe</title>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <style>
+    :root{ --bg:#0f172a; --panel:#fff; --b:#e5e7eb; --text:#0f172a }
+    body{font-family:Arial, sans-serif; color:var(--text); max-width:520px; margin:40px auto; padding:0 16px}
+    .card{border:1px solid var(--b); border-radius:12px; padding:16px; box-shadow:0 6px 18px rgba(0,0,0,.06); background:var(--panel)}
+    input{width:100%; padding:10px; margin:8px 0; border:1px solid #cbd5e1; border-radius:8px}
+    button{padding:10px 14px; border:0; border-radius:10px; background:var(--bg); color:#fff; cursor:pointer}
+    small{color:#475569}
+  </style>
+</head>
+<body>
+  <h1>Réinitialiser le mot de passe</h1>
+  <div class="card">
+    <p id="status">Chargement du lien…</p>
+    <form id="form" style="display:none">
+      <input id="pwd1" type="password" placeholder="Nouveau mot de passe (min. 8 caractères)" required minlength="8" />
+      <input id="pwd2" type="password" placeholder="Confirmer le mot de passe" required minlength="8" />
+      <button type="submit">Mettre à jour</button>
+      <small id="help"></small>
+    </form>
+  </div>
+
+<script>
+/** ⚙️ CONFIG SUPABASE (mêmes valeurs que index.html) */
+const SUPABASE_URL = "https://svexvxvgexvavtnfnkwh.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZXh2eHZnZXh2YXZ0bmZua3doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5NTIxMTIsImV4cCI6MjA3MzUyODExMn0.Ux4HX99qzVGLKC35dfuizbZq-OS-x98BpamYffoDpUk";
+
+/** 🔗 URL publique de TON site (GitHub Pages) */
+const PUBLIC_BASE_URL = "https://moutapha12.github.io/signallightning";
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth:{ persistSession:false } });
+
+(async function boot(){
+  const params = new URLSearchParams(location.hash.substring(1));
+  const access_token  = params.get('access_token');
+  const refresh_token = params.get('refresh_token');
+
+  const status = document.getElementById('status');
+  const form   = document.getElementById('form');
+  const help   = document.getElementById('help');
+
+  if(!access_token || !refresh_token){
+    status.textContent = "Lien invalide ou expiré. Redemandez un lien depuis l’application.";
+    return;
+  }
+
+  // installe une session temporaire depuis le lien reçu par email
+  const { error: setErr } = await sb.auth.setSession({ access_token, refresh_token });
+  if(setErr){
+    status.textContent = "Impossible d'ouvrir la session de récupération. Redemandez un lien.";
+    return;
+  }
+
+  status.textContent = "Entrez votre nouveau mot de passe.";
+  form.style.display = 'block';
+
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const p1 = document.getElementById('pwd1').value.trim();
+    const p2 = document.getElementById('pwd2').value.trim();
+    if(p1.length < 8){ alert("8 caractères minimum."); return; }
+    if(p1 !== p2){ alert("Les mots de passe ne correspondent pas."); return; }
+
+    // met à jour le mot de passe
+    const { error: upErr } = await sb.auth.updateUser({ password: p1 });
+    if(upErr){ alert("Erreur: " + upErr.message); return; }
+
+    help.textContent = "Mot de passe mis à jour. Redirection…";
+    try { await sb.auth.signOut(); } catch(_) {}
+
+    // retour vers l’app
+    location.href = PUBLIC_BASE_URL + "/index.html";
+  });
+})();
+</script>
+</body>
+</html>
