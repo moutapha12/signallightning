@@ -12,7 +12,7 @@
   <style>
     :root{
       --bg:#0f172a; --brand:#e82727; --ok:#1bf074; --ko:#ef4444; --warn:#f59e0b;
-      --panel:#ffffff; /* ← redevient BLANC après flash */
+      --panel:#ffffff;
       --panel-border:#e5e7eb; --text:#0f172a; --success:#16a34a;
     }
     *{ box-sizing:border-box }
@@ -22,9 +22,10 @@
     #map{ height:52vh; width:100%; }
 
     .panel{
-      padding:12px 16px; background:var(--panel); border-top:1px solid var(--panel-border);
+      padding:12px 16px; background:var(--panel); border-top:1px solid --panel-border;
       border-radius:14px 14px 0 0; box-shadow:0 -10px 30px rgba(0,0,0,.08);
       transition: background .25s ease, color .25s ease;
+      border-top:1px solid var(--panel-border);
     }
 
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
@@ -51,34 +52,14 @@
     .b-ok{ background:#dcfce7; color:#166534 } .b-mid{ background:#fff7ed; color:#9a3412 }
     .b-closed{ background:#e6ffed; color:#166534; border:1px solid #bbf7d0 } .b-active{ background:#fff1f2; color:#9f1239; border:1px solid #fecdd3 }
 
-    /* ---------- FLASH UNIQUE (couleur -> revient BLANC) ---------- */
-    @keyframes flash-red {
-      0%{ background:#fff; color:var(--text); }
-      45%{ background:var(--ko); color:#fff; }
-      100%{ background:#fff; color:var(--text); }
-    }
-    @keyframes flash-orange {
-      0%{ background:#fff; color:var(--text); }
-      45%{ background:var(--warn); color:#fff; }
-      100%{ background:#fff; color:var(--text); }
-    }
-    @keyframes flash-green {
-      0%{ background:#fff; color:var(--text); }
-      45%{ background:var(--success); color:#fff; }
-      100%{ background:#fff; color:var(--text); }
-    }
+    @keyframes flash-red { 0%{ background:#fff; color:var(--text); } 45%{ background:var(--ko); color:#fff; } 100%{ background:#fff; color:var(--text); } }
+    @keyframes flash-orange{ 0%{ background:#fff; color:var(--text); } 45%{ background:var(--warn); color:#fff; } 100%{ background:#fff; color:var(--text); } }
+    @keyframes flash-green { 0%{ background:#fff; color:var(--text); } 45%{ background:var(--success); color:#fff; } 100%{ background:#fff; color:var(--text); } }
     .panel.flash-red    { animation: flash-red .9s ease-out 1; }
     .panel.flash-orange { animation: flash-orange .9s ease-out 1; }
     .panel.flash-green  { animation: flash-green .9s ease-out 1; }
 
-    /* Animation “rebond” du marqueur (pas de halo ni de bordure) */
-    @keyframes bounce {
-      0%{ transform: translateY(0) }
-      30%{ transform: translateY(-6px) }
-      60%{ transform: translateY(0) }
-      85%{ transform: translateY(-3px) }
-      100%{ transform: translateY(0) }
-    }
+    @keyframes bounce { 0%{ transform: translateY(0) } 30%{ transform: translateY(-6px) } 60%{ transform: translateY(0) } 85%{ transform: translateY(-3px) } 100%{ transform: translateY(0) } }
     .bounce{ animation: bounce .45s ease-out; }
   </style>
 </head>
@@ -149,6 +130,8 @@
         <button id="btnAddLamp" class="btn ghost" style="display:none;">➕ Ajouter lampe</button>
         <button id="btnExportXLSX" class="btn ghost">⬇️ Export Excel</button>
         <button id="btnPurge" class="btn danger">🗑️ Purger le journal</button>
+        <!-- ♻️ Réactiver par ID -->
+        <button id="btnEnablePrompt" class="btn alt">♻️ Réactiver (ID)</button>
       </div>
     </div>
 
@@ -167,37 +150,35 @@
    ========================= */
 const SUPABASE_URL = "https://svexvxvgexvavtnfnkwh.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZXh2eHZnZXh2YXZ0bmZua3doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5NTIxMTIsImV4cCI6MjA3MzUyODExMn0.Ux4HX99qzVGLKC35dfuizbZq-OS-x98BpamYffoDpUk";
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ✅ URL IFTTT
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false }
+});
+
+// ✅ IFTTT
 const IFTTT_URL = "https://maker.ifttt.com/trigger/Salvi_signalement/with/key/kMegBLDT4szlB6uuR5a2hJtJe_0u48dG-isV6K6A6hT";
 async function pushIFTTT(values){
   const url = IFTTT_URL
     + "?value1=" + encodeURIComponent(values.v1)
     + "&value2=" + encodeURIComponent(values.v2)
     + "&value3=" + encodeURIComponent(values.v3);
-  try {
-    await fetch(url, { method:'GET', mode:'no-cors' });
-  } catch(e) {
-    const img = new Image();
-    img.src = url + "&_t=" + Date.now();
-  }
+  try { await fetch(url, { method:'GET', mode:'no-cors' }); }
+  catch(e){ const img = new Image(); img.src = url + "&_t=" + Date.now(); }
 }
 
 /* =========================
    1) ÉTAT / VARS
    ========================= */
 let map, selectedLamp = null;
-let lampadaires = [];    // depuis DB
+let lampadaires = [];
 let isAdmin = false;
-let LOG_CACHE = [];      // events
+let LOG_CACHE = [];
 
-// Mode ajout lampe
 let addMode = false;
 let mapClickHandler = null;
 
 /* =========================
-   2) ICONS (rouge/orange/vert)
+   2) ICONS
    ========================= */
 const greenIcon = new L.Icon({ iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png', shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconSize:[25,41], iconAnchor:[12,41], popupAnchor:[1,-34], shadowSize:[41,41] });
 const redIcon   = new L.Icon({ iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',   shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png', iconSize:[25,41], iconAnchor:[12,41], popupAnchor:[1,-34], shadowSize:[41,41] });
@@ -214,19 +195,13 @@ function popupHtml(l){
   return `<b>${l.id}</b><br/>${label}` + adminBtns;
 }
 function applyMarker(l){
-  // icône selon l'état
   if(l.etat==='PANNE') l._marker.setIcon(redIcon);
   else if(l.etat==='EN_COURS') l._marker.setIcon(orangeIcon);
   else l._marker.setIcon(greenIcon);
 
-  // contenu popup (avec bouton Désactiver si admin)
   const html = popupHtml(l);
   const existing = l._marker.getPopup && l._marker.getPopup();
-  if(!existing){
-    l._marker.bindPopup(html);
-  }else{
-    l._marker.setPopupContent(html);
-  }
+  if(!existing){ l._marker.bindPopup(html); } else { l._marker.setPopupContent(html); }
 }
 
 /* =========================
@@ -265,7 +240,7 @@ function setLogData(rows){
   }));
 }
 function computeLatestStatuses(){
-  const latest = new Map(); // id -> {statut, pk}
+  const latest = new Map();
   for(const r of LOG_CACHE){
     const cur = latest.get(r.id);
     if(!cur || r.pk > cur.pk) latest.set(r.id, { statut: r.statut, pk: r.pk });
@@ -273,14 +248,14 @@ function computeLatestStatuses(){
   for(const l of lampadaires){
     const lr = latest.get(l.id);
     if(!lr) continue;
-    l.etat = (lr.statut === 'RÉPARÉ') ? 'OK' : lr.statut; // PANNE/EN_COURS/OK
+    l.etat = (lr.statut === 'RÉPARÉ') ? 'OK' : lr.statut;
   }
 }
 function renderLogs(){
   const f = document.getElementById('filterSel')?.value || 'ALL';
   const q = (document.getElementById('searchInp')?.value || '').toLowerCase();
 
-  const rows = LOG_CACHE.slice(); // pk DESC
+  const rows = LOG_CACHE.slice();
   const visible = rows
     .filter(r => {
       if(f === 'ALL') return true;
@@ -352,7 +327,6 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
 
 document.getElementById('btnReset').addEventListener('click', async ()=>{
   const email = prompt("Entrez votre email :"); if(!email) return;
-  // NOTE: en prod (GitHub Pages), construis l'URL complète vers reset.html
   const { origin, pathname } = window.location;
   const base = pathname.replace(/\/index\.html?$/,'').replace(/\/$/,'');
   const resetUrl = `${origin}${base}/reset.html`;
@@ -417,37 +391,54 @@ document.addEventListener('click', async (e)=>{
     if(!isAdmin){ alert('Admin requis'); return; }
     enableAddMode(!addMode);
   }
-  // 🚫 Désactiver (admin)
+
+  // 🚫 Désactiver (admin) — via RPC
   if(e.target.dataset && e.target.dataset.cmd==='disable'){
     if(!isAdmin){ alert('Admin requis'); return; }
     const l = lampadaires.find(x=>x.id===e.target.dataset.id); if(!l) return;
     if(!confirm(`Désactiver le lampadaire ${l.id} ?`)) return;
 
-    await cloudUpsertLamp({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, actif:false });
-    if(l._marker){ map.removeLayer(l._marker); l._marker = null; }
-    lampadaires = lampadaires.filter(x => x.id !== l.id);
-    selectedLamp = null;
-    document.getElementById('btnSignal').disabled = true;
-    document.getElementById('btnEnCours').disabled = true;
-    document.getElementById('btnRepair').disabled = true;
-    document.getElementById('status').textContent = `Lampe ${l.id} désactivée.`;
-    updateStats();
-    renderLogs();
+    try{
+      const { error } = await sb.rpc('disable_lamp', { lamp_id: l.id });
+      if(error) throw error;
+      if(l._marker){ map.removeLayer(l._marker); l._marker = null; }
+      lampadaires = lampadaires.filter(x => x.id !== l.id);
+      selectedLamp = null;
+      document.getElementById('btnSignal').disabled = true;
+      document.getElementById('btnEnCours').disabled = true;
+      document.getElementById('btnRepair').disabled = true;
+      document.getElementById('status').textContent = `Lampe ${l.id} désactivée.`;
+      updateStats(); renderLogs();
+    }catch(err){
+      alert('❌ Impossible de désactiver: ' + (err?.message||err));
+    }
+  }
+
+  // ♻️ Réactiver (admin) — saisie d'un ID
+  if (e.target.id === 'btnEnablePrompt') {
+    if (!isAdmin) { alert('Admin requis'); return; }
+    const id = (prompt("ID du lampadaire à réactiver (ex: L1) :") || '').trim();
+    if (!id) return;
+
+    try{
+      const { error } = await sb.rpc('enable_lamp', { lamp_id: id });
+      if (error) throw error;
+      alert(`✅ Lampe ${id} réactivée. Recharge la page pour l’afficher sur la carte.`);
+      // Option: recharger automatiquement
+      // location.reload();
+    }catch(err){
+      alert('❌ Impossible de réactiver : ' + (err?.message || err));
+    }
   }
 });
 
-/* === Panneau : FLASH puis retour BLANC === */
+/* === Panneau : FLASH === */
 function updatePanelColor(statut){
   const panel = document.getElementById('mainPanel');
   panel.classList.remove('flash-red','flash-orange','flash-green');
-
-  if(statut==='PANNE'){
-    void panel.offsetWidth; panel.classList.add('flash-red');
-  } else if(statut==='EN_COURS'){
-    void panel.offsetWidth; panel.classList.add('flash-orange');
-  } else if(statut==='RÉPARÉ' || statut==='OK'){
-    void panel.offsetWidth; panel.classList.add('flash-green');
-  }
+  if(statut==='PANNE'){ void panel.offsetWidth; panel.classList.add('flash-red'); }
+  else if(statut==='EN_COURS'){ void panel.offsetWidth; panel.classList.add('flash-orange'); }
+  else if(statut==='RÉPARÉ' || statut==='OK'){ void panel.offsetWidth; panel.classList.add('flash-green'); }
 }
 
 /* === Mode ajout lampe (admin) === */
@@ -625,12 +616,14 @@ function initMap(){
 }
 
 async function bootstrap(){
+  // Déconnexion auto à chaque reload
+  try { await sb.auth.signOut(); } catch(e) {}
+
   initMap();
   await hydrateAdmin();
 
   const [lamps, events] = await Promise.all([ cloudLoadLamps(), cloudLoadEvents() ]);
 
-  // n’afficher que les lampes actives
   lampadaires = (lamps || [])
     .filter(l => l.actif !== false)
     .map(l => ({ id:l.id, lat:l.lat, lon:l.lon, etat:l.etat, _marker:null }));
