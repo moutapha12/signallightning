@@ -1,83 +1,148 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Réinitialiser le mot de passe</title>
+  <meta charset="utf-8" />
+  <title>Réinitialiser le mot de passe — Salvi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <style>
-    :root{ --bg:#0f172a; --panel:#fff; --b:#e5e7eb; --text:#0f172a }
-    body{font-family:Arial, sans-serif; color:var(--text); max-width:520px; margin:40px auto; padding:0 16px}
-    .card{border:1px solid var(--b); border-radius:12px; padding:16px; box-shadow:0 6px 18px rgba(0,0,0,.06); background:var(--panel)}
-    input{width:100%; padding:10px; margin:8px 0; border:1px solid #cbd5e1; border-radius:8px}
-    button{padding:10px 14px; border:0; border-radius:10px; background:var(--bg); color:#fff; cursor:pointer}
-    small{color:#475569}
+    :root{ --bg:#0f172a; --panel:#fff; --text:#0f172a; --brand:#0ea5e9; --ok:#16a34a; --err:#b91c1c }
+    body{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; background:#f6f7fb; color:var(--text) }
+    .wrap{ max-width:420px; margin:10vh auto; background:var(--panel); border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,.08); padding:22px }
+    h1{ margin:0 0 6px; font-size:22px; }
+    p{ margin:0 0 14px; color:#475569 }
+    .row{ display:flex; flex-direction:column; gap:10px; }
+    input{ padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; font-size:15px }
+    button{ padding:10px 14px; border:none; border-radius:10px; background:var(--brand); color:#fff; font-weight:700; cursor:pointer }
+    button:disabled{ opacity:.6; cursor:not-allowed }
+    .msg{ margin-top:12px; font-size:14px }
+    .ok{ color:var(--ok) } .err{ color:var(--err) }
+    .muted{ font-size:12px; color:#64748b; margin-top:10px }
+    .brand{ display:flex; align-items:center; gap:10px; margin-bottom:10px }
+    .brand img{ height:40px; border-radius:8px; box-shadow:0 6px 22px rgba(0,0,0,.18) }
+    .center{ text-align:center; }
+    a{ color:#0ea5e9; text-decoration:none }
   </style>
 </head>
 <body>
-  <h1>Réinitialiser le mot de passe</h1>
-  <div class="card">
-    <p id="status">Chargement du lien…</p>
-    <form id="form" style="display:none">
-      <input id="pwd1" type="password" placeholder="Nouveau mot de passe (min. 8 caractères)" required minlength="8" />
-      <input id="pwd2" type="password" placeholder="Confirmer le mot de passe" required minlength="8" />
-      <button type="submit">Mettre à jour</button>
-      <small id="help"></small>
-    </form>
+  <div class="wrap">
+    <div class="brand">
+      <img src="logo-salvi.png" alt="Salvi" />
+      <h1>Réinitialiser le mot de passe</h1>
+    </div>
+    <p id="state">Vérification du lien…</p>
+
+    <div id="form" style="display:none">
+      <div class="row">
+        <input id="pwd1" type="password" placeholder="Nouveau mot de passe (min 8 caractères)" />
+        <input id="pwd2" type="password" placeholder="Confirmer le nouveau mot de passe" />
+        <button id="btnSave">Mettre à jour le mot de passe</button>
+        <div id="msg" class="msg"></div>
+      </div>
+      <p class="muted">Astuce : choisis une phrase secrète facile à retenir 💡</p>
+    </div>
+
+    <div id="done" class="center" style="display:none">
+      <p class="ok">✅ Mot de passe mis à jour.</p>
+      <p><a href="./">Retour à l’application</a></p>
+    </div>
+
+    <div id="error" class="center" style="display:none">
+      <p class="err">❌ Lien invalide ou expiré.</p>
+      <p>Reviens sur l’application et demande un nouveau lien <br />(“Mot de passe oublié ?”).</p>
+      <p class="muted">Le lien est à usage unique et expire rapidement.</p>
+    </div>
   </div>
 
 <script>
-/** ⚙️ CONFIG SUPABASE (mêmes valeurs que index.html) */
+/* ========= 0) CONFIG SUPABASE ========= */
 const SUPABASE_URL = "https://svexvxvgexvavtnfnkwh.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZXh2eHZnZXh2YXZ0bmZua3doIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5NTIxMTIsImV4cCI6MjA3MzUyODExMn0.Ux4HX99qzVGLKC35dfuizbZq-OS-x98BpamYffoDpUk";
 
-/** 🔗 URL publique de TON site (GitHub Pages) */
-const PUBLIC_BASE_URL = "https://moutapha12.github.io/signallightning";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true }
+});
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth:{ persistSession:false } });
+/* ========= 1) OUTILS UI ========= */
+const $ = (id) => document.getElementById(id);
+const ui = {
+  show: (id) => ($(id).style.display = 'block'),
+  hide: (id) => ($(id).style.display = 'none'),
+  text: (id, s) => ($(id).textContent = s),
+  msg:  (s, ok=false) => { const el = $('msg'); el.className = 'msg ' + (ok?'ok':'err'); el.textContent = s; }
+};
 
-(async function boot(){
-  const params = new URLSearchParams(location.hash.substring(1));
-  const access_token  = params.get('access_token');
-  const refresh_token = params.get('refresh_token');
+/* ========= 2) ÉTABLIR LA SESSION DE RÉCUPÉRATION =========
+   On gère:
+   - Les liens avec #access_token (classique) -> supabase-js le prend en charge auto
+   - Les liens avec ?code=... (PKCE) -> on appelle exchangeCodeForSession()
+============================================================ */
+async function ensureRecoverySession() {
+  // 2a) Si query ?code=..., on échange pour une session
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
 
-  const status = document.getElementById('status');
-  const form   = document.getElementById('form');
-  const help   = document.getElementById('help');
+  if (code) {
+    const { data, error } = await sb.auth.exchangeCodeForSession(code);
+    if (error) {
+      console.error('exchangeCodeForSession error:', error);
+      return null;
+    }
+  }
 
-  if(!access_token || !refresh_token){
-    status.textContent = "Lien invalide ou expiré. Redemandez un lien depuis l’application.";
+  // 2b) Vérifie qu'on a bien une session active (après échange OU via hash)
+  const { data: { session }, error } = await sb.auth.getSession();
+  if (error) { console.error('getSession error:', error); }
+  return session;
+}
+
+/* ========= 3) BOOTSTRAP ========= */
+async function bootstrap() {
+  try {
+    ui.text('state', 'Validation du lien…');
+    const session = await ensureRecoverySession();
+
+    if (!session) {
+      // Pas de session => lien invalide/expiré ou déjà utilisé
+      ui.hide('state'); ui.show('error');
+      return;
+    }
+
+    // Session OK -> affiche le formulaire
+    ui.text('state', 'Lien validé ✅');
+    setTimeout(()=>{ ui.hide('state'); ui.show('form'); }, 400);
+
+  } catch (e) {
+    console.error(e);
+    ui.hide('state'); ui.show('error');
+  }
+}
+
+/* ========= 4) SOUMISSION DU NOUVEAU MOT DE PASSE ========= */
+$('btnSave').addEventListener('click', async () => {
+  const p1 = $('pwd1').value.trim();
+  const p2 = $('pwd2').value.trim();
+
+  if (p1.length < 8) { ui.msg("Le mot de passe doit faire au moins 8 caractères."); return; }
+  if (p1 !== p2)     { ui.msg("Les mots de passe ne correspondent pas."); return; }
+
+  $('btnSave').disabled = true;
+  ui.msg('Mise à jour en cours…', true);
+
+  const { data, error } = await sb.auth.updateUser({ password: p1 });
+  $('btnSave').disabled = false;
+
+  if (error) {
+    console.error(error);
+    ui.msg("Erreur : " + (error.message || error));
     return;
   }
 
-  // installe une session temporaire depuis le lien reçu par email
-  const { error: setErr } = await sb.auth.setSession({ access_token, refresh_token });
-  if(setErr){
-    status.textContent = "Impossible d'ouvrir la session de récupération. Redemandez un lien.";
-    return;
-  }
+  ui.hide('form'); ui.show('done');
+});
 
-  status.textContent = "Entrez votre nouveau mot de passe.";
-  form.style.display = 'block';
-
-  form.addEventListener('submit', async (e)=>{
-    e.preventDefault();
-    const p1 = document.getElementById('pwd1').value.trim();
-    const p2 = document.getElementById('pwd2').value.trim();
-    if(p1.length < 8){ alert("8 caractères minimum."); return; }
-    if(p1 !== p2){ alert("Les mots de passe ne correspondent pas."); return; }
-
-    // met à jour le mot de passe
-    const { error: upErr } = await sb.auth.updateUser({ password: p1 });
-    if(upErr){ alert("Erreur: " + upErr.message); return; }
-
-    help.textContent = "Mot de passe mis à jour. Redirection…";
-    try { await sb.auth.signOut(); } catch(_) {}
-
-    // retour vers l’app
-    location.href = PUBLIC_BASE_URL + "/index.html";
-  });
-})();
+/* LANCE */
+bootstrap();
 </script>
 </body>
 </html>
