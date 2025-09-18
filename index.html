@@ -12,8 +12,7 @@
   <style>
     :root{
       --bg:#0f172a; --brand:#e82727; --ok:#1bf074; --ko:#ef4444; --warn:#f59e0b;
-      --panel:#ffffff;
-      --panel-border:#e5e7eb; --text:#0f172a; --success:#16a34a;
+      --panel:#ffffff; --panel-border:#e5e7eb; --text:#0f172a; --success:#16a34a;
     }
     *{ box-sizing:border-box }
     body{ font-family: Arial, sans-serif; margin:0; color:var(--text); background:#fff; }
@@ -22,10 +21,9 @@
     #map{ height:52vh; width:100%; }
 
     .panel{
-      padding:12px 16px; background:var(--panel); border-top:1px solid --panel-border;
+      padding:12px 16px; background:var(--panel); border-top:1px solid var(--panel-border);
       border-radius:14px 14px 0 0; box-shadow:0 -10px 30px rgba(0,0,0,.08);
       transition: background .25s ease, color .25s ease;
-      border-top:1px solid var(--panel-border);
     }
 
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
@@ -113,6 +111,7 @@
         <div class="stat">En cours actives : <b id="stEnCoursActives">0</b></div>
         <div class="stat">Réparations (total) : <b id="stRepairs">0</b></div>
       </div>
+
       <div class="tools">
         <label>Filtre :
           <select id="filterSel">
@@ -127,11 +126,18 @@
         <label>Recherche :
           <input id="searchInp" placeholder="Rechercher (ID, type, statut)"/>
         </label>
+
         <button id="btnAddLamp" class="btn ghost" style="display:none;">➕ Ajouter lampe</button>
         <button id="btnExportXLSX" class="btn ghost">⬇️ Export Excel</button>
         <button id="btnPurge" class="btn danger">🗑️ Purger le journal</button>
-        <!-- ♻️ Réactiver par ID -->
-        <button id="btnEnablePrompt" class="btn alt">♻️ Réactiver (ID)</button>
+
+        <!-- Gestion désactivation / réactivation -->
+        <select id="disabledList" style="min-width:180px;">
+          <option value="">— Désactivées —</option>
+        </select>
+        <button id="btnRefreshDisabled" class="btn ghost" title="Rafraîchir la liste">↻</button>
+        <button id="btnEnableSelected" class="btn alt" title="Réactiver la lampe sélectionnée">♻️ Réactiver</button>
+        <button id="btnEnablePrompt" class="btn alt" title="Réactiver par saisie d'ID">♻️ Réactiver (ID)</button>
       </div>
     </div>
 
@@ -155,7 +161,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
-// ✅ IFTTT
+// IFTTT (inchangé)
 const IFTTT_URL = "https://maker.ifttt.com/trigger/Salvi_signalement/with/key/kMegBLDT4szlB6uuR5a2hJtJe_0u48dG-isV6K6A6hT";
 async function pushIFTTT(values){
   const url = IFTTT_URL
@@ -325,13 +331,17 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
   updateStats(); renderLogs();
 });
 
+/* 🔐 Mot de passe oublié — TOUJOURS vers moustaphdiouf44@gmail.com */
 document.getElementById('btnReset').addEventListener('click', async ()=>{
-  const email = prompt("Entrez votre email :"); if(!email) return;
-  const { origin, pathname } = window.location;
-  const base = pathname.replace(/\/index\.html?$/,'').replace(/\/$/,'');
-  const resetUrl = `${origin}${base}/reset.html`;
-  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: resetUrl });
-  if (error) alert("Erreur : " + error.message); else alert("✅ Email de réinitialisation envoyé.");
+  const email = 'moustaphdiouf44@gmail.com';
+  const resetUrl = 'https://moutapha12.github.io/signallightning/reset.html';
+  try{
+    await sb.auth.resetPasswordForEmail(email, { redirectTo: resetUrl });
+    alert("✅ L'email de réinitialisation a été envoyé à " + email + " (pense à vérifier le SPAM).");
+  }catch(err){
+    alert("❌ Erreur lors de l'envoi: " + (err?.message || err));
+    console.error(err);
+  }
 });
 
 async function hydrateAdmin(){
@@ -352,6 +362,24 @@ async function hydrateAdmin(){
     addBtn.style.display = isAdmin ? 'inline-block' : 'none';
     if(!isAdmin) enableAddMode(false);
   }
+
+  if (isAdmin) { await loadDisabledLamps(); }
+}
+
+/* =========================
+   6bis) LISTE LAMPES DÉSACTIVÉES (admin)
+   ========================= */
+async function loadDisabledLamps(){
+  const sel = document.getElementById('disabledList');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">— Désactivées —</option>';
+  const { data, error } = await sb.from('lamps').select('id').eq('actif', false).order('id');
+  if(error){ console.error('disabled list:', error); return; }
+  (data||[]).forEach(r=>{
+    const opt = document.createElement('option');
+    opt.value = r.id; opt.textContent = r.id;
+    sel.appendChild(opt);
+  });
 }
 
 /* =========================
@@ -363,17 +391,15 @@ document.addEventListener('click', async (e)=>{
     await mark(selectedLamp, 'PANNE', type);
     document.getElementById('comment').value = "";
   }
-  if(e.target.id==='btnEnCours' && isAdmin && selectedLamp){
-    await mark(selectedLamp, 'EN_COURS');
-  }
-  if(e.target.id==='btnRepair' && isAdmin && selectedLamp){
-    await mark(selectedLamp, 'RÉPARÉ');
-  }
+  if(e.target.id==='btnEnCours' && isAdmin && selectedLamp){ await mark(selectedLamp, 'EN_COURS'); }
+  if(e.target.id==='btnRepair' && isAdmin && selectedLamp){ await mark(selectedLamp, 'RÉPARÉ'); }
+
   if(e.target.dataset && e.target.dataset.cmd==='set'){
     if(!isAdmin) { alert('Admin requis'); return; }
     const l = lampadaires.find(x=>x.id===e.target.dataset.id); if(!l) return;
     await mark(l, e.target.dataset.status);
   }
+
   if(e.target.id==='btnExportXLSX'){
     const mapIndex = Object.fromEntries(lampadaires.map(l => [l.id, l]));
     const data = LOG_CACHE.map(r => ({
@@ -384,23 +410,23 @@ document.addEventListener('click', async (e)=>{
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Signalements");
     XLSX.writeFile(wb, `salvi_signalements_${Date.now()}.xlsx`);
   }
-  if(e.target.id==='btnPurge'){
-    await purgeEvents();
-  }
+
+  if(e.target.id==='btnPurge'){ await purgeEvents(); }
+
   if(e.target && e.target.id === 'btnAddLamp'){
     if(!isAdmin){ alert('Admin requis'); return; }
     enableAddMode(!addMode);
   }
 
-  // 🚫 Désactiver (admin) — via RPC
+  // Désactiver via RPC (tu dois avoir créé la fonction SQL disable_lamp)
   if(e.target.dataset && e.target.dataset.cmd==='disable'){
     if(!isAdmin){ alert('Admin requis'); return; }
     const l = lampadaires.find(x=>x.id===e.target.dataset.id); if(!l) return;
     if(!confirm(`Désactiver le lampadaire ${l.id} ?`)) return;
-
     try{
       const { error } = await sb.rpc('disable_lamp', { lamp_id: l.id });
       if(error) throw error;
+
       if(l._marker){ map.removeLayer(l._marker); l._marker = null; }
       lampadaires = lampadaires.filter(x => x.id !== l.id);
       selectedLamp = null;
@@ -409,23 +435,41 @@ document.addEventListener('click', async (e)=>{
       document.getElementById('btnRepair').disabled = true;
       document.getElementById('status').textContent = `Lampe ${l.id} désactivée.`;
       updateStats(); renderLogs();
+      await loadDisabledLamps();
     }catch(err){
       alert('❌ Impossible de désactiver: ' + (err?.message||err));
     }
   }
 
-  // ♻️ Réactiver (admin) — saisie d'un ID
+  // Réactiver via liste
+  if(e.target.id==='btnEnableSelected'){
+    if(!isAdmin){ alert('Admin requis'); return; }
+    const sel = document.getElementById('disabledList');
+    const id = sel?.value?.trim();
+    if(!id){ alert('Choisis une lampe désactivée dans la liste.'); return; }
+    try{
+      const { error } = await sb.rpc('enable_lamp', { lamp_id: id });
+      if(error) throw error;
+      location.reload();
+    }catch(err){
+      alert('❌ Impossible de réactiver : ' + (err?.message||err));
+    }
+  }
+
+  if(e.target.id==='btnRefreshDisabled'){
+    if(!isAdmin){ alert('Admin requis'); return; }
+    await loadDisabledLamps();
+  }
+
+  // Réactiver par saisie d'ID
   if (e.target.id === 'btnEnablePrompt') {
     if (!isAdmin) { alert('Admin requis'); return; }
     const id = (prompt("ID du lampadaire à réactiver (ex: L1) :") || '').trim();
     if (!id) return;
-
     try{
       const { error } = await sb.rpc('enable_lamp', { lamp_id: id });
       if (error) throw error;
-      alert(`✅ Lampe ${id} réactivée. Recharge la page pour l’afficher sur la carte.`);
-      // Option: recharger automatiquement
-      // location.reload();
+      location.reload();
     }catch(err){
       alert('❌ Impossible de réactiver : ' + (err?.message || err));
     }
@@ -458,12 +502,10 @@ function enableAddMode(on){
       if(!id){ enableAddMode(false); return; }
       id = id.trim();
       if(!id){ alert('ID invalide.'); return; }
-
       if(lampadaires.some(l => l.id === id)){
         alert('❌ ID déjà utilisé. Choisis un autre identifiant.');
         return;
       }
-
       const newLamp = { id, lat, lon, etat: 'OK', actif: true };
       await cloudUpsertLamp(newLamp);
 
@@ -586,7 +628,6 @@ function subscribeRealtime(){
   sb.channel('realtime:lamps')
     .on('postgres_changes', { event:'UPDATE', schema:'public', table:'lamps' }, (payload)=>{
       const row = payload.new;
-
       if (row.actif === false) {
         const lx = lampadaires.find(x=>x.id===row.id);
         if(lx){
@@ -596,7 +637,6 @@ function subscribeRealtime(){
         }
         return;
       }
-
       const l = lampadaires.find(x=>x.id===row.id);
       if(l){
         l.etat = row.etat;
@@ -616,7 +656,6 @@ function initMap(){
 }
 
 async function bootstrap(){
-  // Déconnexion auto à chaque reload
   try { await sb.auth.signOut(); } catch(e) {}
 
   initMap();
